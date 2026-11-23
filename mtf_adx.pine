@@ -1,0 +1,109 @@
+//@version=6
+indicator("MTF ADX Strength (Clean + Alerts)", "MTFADX", overlay=false, format=format.price, precision=2)
+
+// ========================================================================
+// CONFIGURATION
+// ========================================================================
+
+string[] timeframes = array.from("5", "15", "30", "60", "240", "D", "W")
+string[] timeframe_labels = array.from("M5", "M15", "M30", "H1", "H4", "D1", "W1")
+const int TF_COUNT = 7
+const int TABLE_ROWS = 8
+const int diLen = 14
+const int adxSmoothing = 14
+
+// ========================================================================
+// ALERT ENGINE — USER CONFIG
+// ========================================================================
+
+alerts_enabled = input.bool(true, "Enable Alerts")
+alert_tf = input.string("60", "Alert Timeframe", options=["5","15","30","60","240","D","W"])
+alert_adx_min = input.int(25, "Minimum ADX", minval=10, maxval=60)
+alert_direction = input.string("Both", "Trend Direction", options=["Up","Down","Both"])
+alert_strength = input.string("Trend", "Trend Strength", options=["Weak","Trend","Strong"])
+alert_cooldown = input.int(5, "Alert Cooldown (bars)", minval=1)
+
+// ========================================================================
+// ADX / DMI FUNCTION (UNCHANGED)
+// ========================================================================
+
+calculateADXStrength(string tf) =>
+    [plusDI, minusDI, adxVal] = request.security(syminfo.tickerid, tf, ta.dmi(diLen, adxSmoothing))
+    trend_direction = plusDI > minusDI ? 1 : -1
+    signed_strength = adxVal * trend_direction
+    [adxVal, plusDI, minusDI, trend_direction, signed_strength]
+
+// ========================================================================
+// PRECOMPUTE MTF VALUES (EVERY BAR)
+// ========================================================================
+
+float[] adx_vals = array.new_float(TF_COUNT)
+int[] dir_vals = array.new_int(TF_COUNT)
+float[] strength_vals = array.new_float(TF_COUNT)
+
+for i = 0 to TF_COUNT - 1
+    tf = array.get(timeframes, i)
+    [adx_v, _, _, dir_v, str_v] = calculateADXStrength(tf)
+    array.set(adx_vals, i, adx_v)
+    array.set(dir_vals, i, dir_v)
+    array.set(strength_vals, i, str_v)
+
+// ========================================================================
+// ALERT ENGINE — LOGIC
+// ========================================================================
+
+alert_index = array.indexof(timeframes, alert_tf)
+alert_adx = alert_index >= 0 ? array.get(adx_vals, alert_index) : na
+alert_dir = alert_index >= 0 ? array.get(dir_vals, alert_index) : 0
+
+dir_ok = alert_direction == "Both" or (alert_direction == "Up" and alert_dir > 0) or (alert_direction == "Down" and alert_dir < 0)
+strength_ok = (alert_strength == "Weak" and alert_adx >= 15) or (alert_strength == "Trend" and alert_adx >= 25) or (alert_strength == "Strong" and alert_adx >= 40)
+alert_core = alerts_enabled and not na(alert_adx) and alert_adx >= alert_adx_min and dir_ok and strength_ok
+
+var int last_alert_bar = na
+can_fire = na(last_alert_bar) or bar_index - last_alert_bar >= alert_cooldown
+fire_alert = alert_core and can_fire
+
+if fire_alert
+    last_alert_bar := bar_index
+
+// ========================================================================
+// ALERT (EVENT-BASED, CONST STRING)
+// ========================================================================
+
+alertcondition(fire_alert, title="MTF ADX Alert", message="MTF ADX alert fired")
+
+// ========================================================================
+// TABLE
+// ========================================================================
+
+var table strength_table = table.new(position.top_right, 4, TABLE_ROWS, bgcolor=color.white, border_width=1)
+
+if barstate.islast
+    table.cell(strength_table, 0, 0, "TF", text_color=color.white, bgcolor=color.blue)
+    table.cell(strength_table, 1, 0, "ADX", text_color=color.white, bgcolor=color.blue)
+    table.cell(strength_table, 2, 0, "Direction", text_color=color.white, bgcolor=color.blue)
+    table.cell(strength_table, 3, 0, "Strength %", text_color=color.white, bgcolor=color.blue)
+
+    for i = 0 to TF_COUNT - 1
+        adx_val = array.get(adx_vals, i)
+        dir_val = array.get(dir_vals, i)
+        str_val = array.get(strength_vals, i)
+        tf_label = array.get(timeframe_labels, i)
+
+        trend_label = dir_val > 0 ? (adx_val > 40 ? "Strong Up" : adx_val > 25 ? "Uptrend" : "Weak Up") : (adx_val > 40 ? "Strong Down" : adx_val > 25 ? "Downtrend" : "Weak Down")
+        trend_color = dir_val > 0 ? (adx_val > 40 ? color.green : adx_val > 25 ? color.lime : color.orange) : (adx_val > 40 ? color.red : adx_val > 25 ? color.maroon : color.orange)
+
+        table.cell(strength_table, 0, i+1, tf_label, text_color=color.black, bgcolor=color.silver)
+        table.cell(strength_table, 1, i+1, str.tostring(adx_val), text_color=color.black)
+        table.cell(strength_table, 2, i+1, trend_label, text_color=trend_color)
+        table.cell(strength_table, 3, i+1, str.tostring(math.round(str_val)) + "%", text_color=trend_color)
+
+// ========================================================================
+// CURRENT TF ADX
+// ========================================================================
+
+[_, _, adx_native] = ta.dmi(diLen, adxSmoothing)
+plot(adx_native, "Current TF ADX", linewidth=2)
+hline(25)
+hline(50)
